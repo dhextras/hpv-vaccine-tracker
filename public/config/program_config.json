@@ -1,0 +1,9 @@
+{
+  "min_age_years": 9,
+  "routine_age_max_years": 14,
+  "sex_eligibility": "all",
+  "schedule_policy": "cdc_style_2_or_3",
+  "dose2_months_after_dose1": 6,
+  "allow_catchup_age_max_years": 45,
+  "copy_variant": "india_partner"
+}

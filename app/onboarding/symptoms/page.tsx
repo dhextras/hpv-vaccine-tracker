@@ -7,6 +7,8 @@ import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { calculateTriage, getTriageMessage, getTriageColor } from "@/lib/utils/triage";
 import { TriageLevel } from "@/lib/types";
+import { createClient } from "@/lib/supabase/client";
+import { getAccount, getProfiles, createSymptomCheck } from "@/lib/supabase/database";
 
 interface SymptomAnswers {
   genital_anal_bumps: boolean | null;
@@ -16,9 +18,19 @@ interface SymptomAnswers {
   discharge_changes: boolean | null;
 }
 
+interface ProfileSymptoms {
+  profileIndex: number;
+  profileName: string;
+  answers: SymptomAnswers;
+  triage: TriageLevel;
+}
+
 export default function SymptomsPage() {
   const router = useRouter();
-  const [sex, setSex] = useState<string>("");
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isSingleChild, setIsSingleChild] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [answers, setAnswers] = useState<SymptomAnswers>({
     genital_anal_bumps: null,
     unusual_bleeding: null,
@@ -29,14 +41,53 @@ export default function SymptomsPage() {
   const [triageResult, setTriageResult] = useState<TriageLevel | null>(null);
 
   useEffect(() => {
-    const profilesData = localStorage.getItem("profiles");
-    if (!profilesData) {
-      router.push("/onboarding/mode");
-      return;
-    }
-    const profiles = JSON.parse(profilesData);
-    setSex(profiles[0].sex || "");
+    const supabase = createClient();
+    const params = new URLSearchParams(window.location.search);
+    const childParam = params.get("child");
+
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const account = await getAccount(user.id);
+      if (!account) {
+        router.push("/onboarding/mode");
+        return;
+      }
+
+      const fetchedProfiles = await getProfiles(account.id);
+
+      if (!fetchedProfiles || fetchedProfiles.length === 0) {
+        router.push("/onboarding/profile");
+        return;
+      }
+
+      if (childParam === null) {
+        const { data: symptomChecks } = await supabase
+          .from("symptom_checks")
+          .select("profile_id")
+          .in("profile_id", fetchedProfiles.map((p: any) => p.id));
+
+        if (symptomChecks && symptomChecks.length === fetchedProfiles.length) {
+          router.push("/dashboard/home");
+          return;
+        }
+      }
+
+      setProfiles(fetchedProfiles);
+
+      if (childParam !== null) {
+        const childIndex = parseInt(childParam);
+        setIsSingleChild(true);
+        setCurrentIndex(childIndex);
+      }
+    });
   }, [router]);
+
+  const currentProfile = profiles[currentIndex];
+  const sex = currentProfile?.sex || "";
 
   const questions = [
     {
@@ -74,32 +125,81 @@ export default function SymptomsPage() {
     setAnswers((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleCheckSymptoms = () => {
-    const triage = calculateTriage({
-      genital_anal_bumps: answers.genital_anal_bumps || false,
-      unusual_bleeding: answers.unusual_bleeding || false,
-      pain_during_sex: answers.pain_during_sex || false,
-      pelvic_pain: answers.pelvic_pain || false,
-      discharge_changes: answers.discharge_changes || false,
-    });
-    setTriageResult(triage);
-    localStorage.setItem("symptom_triage", triage);
+  const handleCheckSymptoms = async () => {
+    setLoading(true);
+    try {
+      const triage = calculateTriage({
+        genital_anal_bumps: answers.genital_anal_bumps || false,
+        unusual_bleeding: answers.unusual_bleeding || false,
+        pain_during_sex: answers.pain_during_sex || false,
+        pelvic_pain: answers.pelvic_pain || false,
+        discharge_changes: answers.discharge_changes || false,
+      });
+      setTriageResult(triage);
+
+      await createSymptomCheck(currentProfile.id, {
+        genital_anal_bumps: answers.genital_anal_bumps || false,
+        unusual_bleeding: answers.unusual_bleeding,
+        pain_during_sex: answers.pain_during_sex,
+        pelvic_pain: answers.pelvic_pain,
+        discharge_changes: answers.discharge_changes,
+        triage_level: triage,
+      });
+    } catch (error) {
+      console.error("Error saving symptom check:", error);
+      alert("Failed to save symptoms. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleNext = () => {
-    router.push("/dashboard/home");
+  const handleNext = async () => {
+    if (isSingleChild) {
+      router.push("/dashboard/settings");
+    } else if (currentIndex < profiles.length - 1) {
+      setCurrentIndex(currentIndex + 1);
+      setAnswers({
+        genital_anal_bumps: null,
+        unusual_bleeding: null,
+        pain_during_sex: null,
+        pelvic_pain: null,
+        discharge_changes: null,
+      });
+      setTriageResult(null);
+    } else {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const account = await getAccount(user.id);
+        if (account && profiles.length > 0) {
+          await supabase
+            .from("accounts")
+            .update({ active_profile_id: profiles[0].id })
+            .eq("id", account.id);
+        }
+      }
+      router.push("/dashboard/home");
+    }
   };
 
   const allAnswered = visibleQuestions.every(
     (q) => answers[q.key as keyof SymptomAnswers] !== null
   );
 
-  if (!sex) return null;
+  if (!currentProfile) return null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 to-secondary-50 p-4 py-8">
       <div className="max-w-3xl mx-auto">
         <div className="bg-white rounded-2xl shadow-xl p-8">
+          {profiles.length > 1 && (
+            <div className="mb-6 text-center">
+              <div className="inline-block px-4 py-2 bg-primary-100 text-primary-700 rounded-full text-sm font-medium">
+                {currentProfile.display_name || `Child ${currentIndex + 1}`} - Profile {currentIndex + 1} of {profiles.length}
+              </div>
+            </div>
+          )}
+
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
             Do you have any of these symptoms?
           </h1>
@@ -147,11 +247,11 @@ export default function SymptomsPage() {
 
               <Button
                 onClick={handleCheckSymptoms}
-                disabled={!allAnswered}
+                disabled={!allAnswered || loading}
                 className="mt-8"
                 fullWidth
               >
-                Check Symptoms
+                {loading ? "Saving..." : "Check Symptoms"}
               </Button>
             </>
           ) : (
@@ -191,7 +291,7 @@ export default function SymptomsPage() {
                   onClick={handleNext}
                   fullWidth
                 >
-                  Go to Dashboard
+                  {currentIndex < profiles.length - 1 ? "Next Child" : "Go to Dashboard"}
                 </Button>
               </div>
             </>

@@ -1,18 +1,56 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { AccountMode } from "@/lib/types";
+import { createClient } from "@/lib/supabase/client";
+import { getOrCreateAccount } from "@/lib/supabase/database";
 
 export default function ModeSelectionPage() {
   const router = useRouter();
   const [mode, setMode] = useState<AccountMode | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [user, setUser] = useState<any>(null);
 
-  const handleModeSelect = (selectedMode: AccountMode) => {
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const { data: existingAccount } = await supabase
+        .from("accounts")
+        .select("id, mode")
+        .eq("user_id", user.id)
+        .single();
+
+      if (existingAccount) {
+        router.push("/dashboard/home");
+        return;
+      }
+
+      setUser(user);
+    });
+  }, [router]);
+
+  const handleModeSelect = async (selectedMode: AccountMode) => {
+    if (!user) return;
+
     setMode(selectedMode);
-    localStorage.setItem("account_mode", selectedMode);
-    router.push("/onboarding/profile");
+    setLoading(true);
+
+    try {
+      await getOrCreateAccount(user.id, selectedMode);
+      router.push("/onboarding/profile");
+    } catch (error) {
+      console.error("Error creating account:", error);
+      alert("Failed to create account. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -28,11 +66,12 @@ export default function ModeSelectionPage() {
         <div className="space-y-4">
           <button
             onClick={() => handleModeSelect("parent")}
+            disabled={loading}
             className={`w-full p-6 border-2 rounded-xl transition-all duration-200 hover:shadow-lg ${
               mode === "parent"
                 ? "border-primary-600 bg-primary-50"
                 : "border-gray-200 hover:border-primary-300"
-            }`}
+            } ${loading ? "opacity-50 cursor-not-allowed" : ""}`}
           >
             <div className="text-left">
               <div className="text-xl font-semibold text-gray-900 mb-2">
@@ -46,11 +85,12 @@ export default function ModeSelectionPage() {
 
           <button
             onClick={() => handleModeSelect("young_adult")}
+            disabled={loading}
             className={`w-full p-6 border-2 rounded-xl transition-all duration-200 hover:shadow-lg ${
               mode === "young_adult"
                 ? "border-primary-600 bg-primary-50"
                 : "border-gray-200 hover:border-primary-300"
-            }`}
+            } ${loading ? "opacity-50 cursor-not-allowed" : ""}`}
           >
             <div className="text-left">
               <div className="text-xl font-semibold text-gray-900 mb-2">

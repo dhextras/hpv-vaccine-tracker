@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card } from "@/components/ui/Card";
 import { AccountMode, Sex } from "@/lib/types";
+import { createClient } from "@/lib/supabase/client";
+import { getAccount, createProfile } from "@/lib/supabase/database";
 
 interface ProfileForm {
   display_name: string;
@@ -17,17 +19,45 @@ interface ProfileForm {
 export default function ProfilePage() {
   const router = useRouter();
   const [mode, setMode] = useState<AccountMode | null>(null);
+  const [parentName, setParentName] = useState("");
   const [profiles, setProfiles] = useState<ProfileForm[]>([
     { display_name: "", date_of_birth: "", age_years: "", sex: "" },
   ]);
+  const [loading, setLoading] = useState(false);
+  const [user, setUser] = useState<any>(null);
+  const [accountId, setAccountId] = useState<string | null>(null);
 
   useEffect(() => {
-    const savedMode = localStorage.getItem("account_mode") as AccountMode;
-    if (!savedMode) {
-      router.push("/onboarding/mode");
-      return;
-    }
-    setMode(savedMode);
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+      setUser(user);
+
+      const account = await getAccount(user.id);
+      if (!account) {
+        router.push("/onboarding/mode");
+        return;
+      }
+
+      const existingProfiles = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("account_id", account.id);
+
+      if (existingProfiles.data && existingProfiles.data.length > 0) {
+        router.push("/dashboard/home");
+        return;
+      }
+
+      setMode(account.mode);
+      setAccountId(account.id);
+      if (account.parent_name) {
+        setParentName(account.parent_name);
+      }
+    });
   }, [router]);
 
   const addProfile = () => {
@@ -47,16 +77,44 @@ export default function ProfilePage() {
     setProfiles(updated);
   };
 
-  const handleContinue = () => {
-    localStorage.setItem("profiles", JSON.stringify(profiles));
-    router.push("/onboarding/screening");
+  const handleContinue = async () => {
+    if (!accountId) return;
+
+    setLoading(true);
+    try {
+      if (mode === "parent" && parentName) {
+        const supabase = createClient();
+        await supabase
+          .from("accounts")
+          .update({ parent_name: parentName })
+          .eq("id", accountId);
+      }
+
+      for (let i = 0; i < profiles.length; i++) {
+        const p = profiles[i];
+        await createProfile(accountId, {
+          display_name: p.display_name || undefined,
+          date_of_birth: p.date_of_birth || undefined,
+          age_years: p.age_years ? parseInt(p.age_years) : undefined,
+          sex: p.sex as Sex,
+          is_self: mode === "young_adult" || i === 0,
+        });
+      }
+
+      router.push("/onboarding/screening");
+    } catch (error) {
+      console.error("Error saving profiles:", error);
+      alert("Failed to save profiles. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const isValid = profiles.every(
     (p) => (p.date_of_birth || p.age_years) && p.sex
   );
 
-  if (!mode) return null;
+  if (!mode || !accountId) return null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 to-secondary-50 p-4 py-8">
@@ -70,6 +128,17 @@ export default function ProfilePage() {
               ? "Add information for each child"
               : "Tell us a bit about yourself"}
           </p>
+
+          {mode === "parent" && (
+            <div className="mb-6">
+              <Input
+                label="Parent/Guardian Name (Optional)"
+                value={parentName}
+                onChange={(e) => setParentName(e.target.value)}
+                placeholder="Your name"
+              />
+            </div>
+          )}
 
           <div className="space-y-6">
             {profiles.map((profile, index) => (
@@ -170,11 +239,11 @@ export default function ProfilePage() {
 
           <Button
             onClick={handleContinue}
-            disabled={!isValid}
+            disabled={!isValid || loading}
             className="mt-8"
             fullWidth
           >
-            Continue
+            {loading ? "Saving..." : "Continue"}
           </Button>
         </div>
       </div>

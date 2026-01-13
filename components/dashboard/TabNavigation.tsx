@@ -8,6 +8,7 @@ const tabs = [
   { name: "Vaccine Plan", path: "/dashboard/vaccine-plan" },
   { name: "Learn", path: "/dashboard/learn" },
   { name: "Help", path: "/dashboard/help" },
+  { name: "Settings", path: "/dashboard/settings" },
 ];
 
 export function TabNavigation() {

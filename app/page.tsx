@@ -2,17 +2,27 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
+import { getAccount } from "@/lib/supabase/database";
 
 export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    const hasOnboarded = localStorage.getItem("eligibility_status");
-    if (hasOnboarded) {
-      router.push("/dashboard/home");
-    } else {
-      router.push("/onboarding/mode");
-    }
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
+
+      const account = await getAccount(user.id);
+      if (account) {
+        router.push("/dashboard/home");
+      } else {
+        router.push("/onboarding/mode");
+      }
+    });
   }, [router]);
 
   return (

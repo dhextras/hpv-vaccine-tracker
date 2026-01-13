@@ -1,44 +1,169 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { ProgressBar } from "@/components/ui/ProgressBar";
-import { format } from "date-fns";
+import { ChildSelector } from "@/components/dashboard/ChildSelector";
+import { format, addMonths } from "date-fns";
+import { AccountMode } from "@/lib/types";
+import { calculateAgeFromDOB } from "@/lib/utils/eligibility";
+import { scheduleReminder, saveReminders, loadReminders, type DoseReminder } from "@/lib/utils/notifications";
+import { createClient } from "@/lib/supabase/client";
+import { getAccount, getProfiles, getScreeningResults, getOrCreateVaccineSeries, getVaccineDoses, createVaccineDose } from "@/lib/supabase/database";
 
 interface Dose {
   number: 1 | 2 | 3;
   date: string | null;
-  photo?: string;
+  id?: string;
 }
 
 export default function VaccinePlanPage() {
-  const [doses, setDoses] = useState<Dose[]>([
-    { number: 1, date: null },
-    { number: 2, date: null },
-  ]);
+  const [doses, setDoses] = useState<Dose[]>([]);
   const [selectedDose, setSelectedDose] = useState<number | null>(null);
   const [doseDate, setDoseDate] = useState("");
+  const [activeProfile, setActiveProfile] = useState<any>(null);
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [mode, setMode] = useState<AccountMode | null>(null);
+  const [seriesId, setSeriesId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const account = await getAccount(user.id);
+      if (!account) {
+        window.location.href = "/onboarding/mode";
+        return;
+      }
+
+      setMode(account.mode);
+      const fetchedProfiles = await getProfiles(account.id);
+      setProfiles(fetchedProfiles);
+
+      const active = account.active_profile_id
+        ? fetchedProfiles.find((p: any) => p.id === account.active_profile_id)
+        : fetchedProfiles[0];
+
+      setActiveProfile(active);
+
+      if (active) {
+        const screening = await getScreeningResults(active.id);
+
+        let numDoses = 2;
+        const age = active.date_of_birth
+          ? calculateAgeFromDOB(active.date_of_birth)
+          : active.age_years;
+
+        if (age >= 15 || screening?.immunocompromised) {
+          numDoses = 3;
+        }
+
+        const scheduleType = numDoses === 2 ? "two_dose" : "three_dose";
+        const series = await getOrCreateVaccineSeries(
+          active.id,
+          scheduleType,
+          screening?.immunocompromised || false
+        );
+
+        setSeriesId(series.id);
+
+        const existingDoses = await getVaccineDoses(series.id);
+
+        if (existingDoses.length > 0) {
+          const mappedDoses = Array.from({ length: numDoses }, (_, i) => {
+            const existing = existingDoses.find((d: any) => d.dose_number === i + 1);
+            return {
+              number: (i + 1) as 1 | 2 | 3,
+              date: existing?.date_administered || null,
+              id: existing?.id,
+            };
+          });
+          setDoses(mappedDoses);
+        } else {
+          const initialDoses = Array.from({ length: numDoses }, (_, i) => ({
+            number: (i + 1) as 1 | 2 | 3,
+            date: null,
+          }));
+          setDoses(initialDoses);
+        }
+      }
+    });
+  }, []);
 
   const completedDoses = doses.filter((d) => d.date !== null).length;
-  const progress = (completedDoses / doses.length) * 100;
+  const progress = doses.length > 0 ? (completedDoses / doses.length) * 100 : 0;
 
-  const handleMarkDose = () => {
-    if (selectedDose !== null && doseDate) {
-      setDoses((prev) =>
-        prev.map((d) =>
+  const handleMarkDose = async () => {
+    if (selectedDose !== null && doseDate && seriesId) {
+      setLoading(true);
+      try {
+        await createVaccineDose(seriesId, selectedDose, doseDate);
+
+        const newDoses = doses.map((d) =>
           d.number === selectedDose ? { ...d, date: doseDate } : d
-        )
-      );
-      setSelectedDose(null);
-      setDoseDate("");
+        );
+        setDoses(newDoses);
+
+        const nextDose = newDoses.find((d) => d.date === null);
+        if (nextDose && activeProfile) {
+          let monthsUntilNext = 6;
+          if (newDoses.length === 3 && nextDose.number === 2) {
+            monthsUntilNext = 2;
+          }
+
+          const nextDueDate = addMonths(new Date(doseDate), monthsUntilNext);
+          const profileName = activeProfile.display_name || "Child";
+
+          const reminder: DoseReminder = {
+            doseNumber: nextDose.number,
+            dueDate: nextDueDate.toISOString(),
+            profileName,
+            profileId: activeProfile.id,
+          };
+
+          const existingReminders = loadReminders();
+          const filteredReminders = existingReminders.filter(
+            (r) => !(r.profileName === profileName && r.doseNumber === nextDose.number)
+          );
+          const updatedReminders = [...filteredReminders, reminder];
+
+          saveReminders(updatedReminders);
+          scheduleReminder(reminder);
+        }
+
+        setSelectedDose(null);
+        setDoseDate("");
+      } catch (error) {
+        console.error("Error saving dose:", error);
+        alert("Failed to save dose. Please try again.");
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
   const handleUploadPhoto = (doseNumber: number) => {
     alert("Photo upload coming soon with Supabase Storage integration");
   };
+
+  const age = activeProfile?.date_of_birth
+    ? calculateAgeFromDOB(activeProfile.date_of_birth)
+    : activeProfile?.age_years;
+
+  if (doses.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-gray-600">Loading vaccine plan...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -47,9 +172,13 @@ export default function VaccinePlanPage() {
           Vaccine Plan
         </h2>
         <p className="text-gray-600">
-          Track your doses and completion
+          {mode === "parent" && activeProfile
+            ? `Tracking doses for: ${activeProfile.display_name || "Child"} (${age} years)`
+            : "Track your doses and completion"}
         </p>
       </div>
+
+      {mode === "parent" && <ChildSelector />}
 
       <Card>
         <CardHeader>

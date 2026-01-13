@@ -1,29 +1,63 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { MilestoneProgress } from "@/components/ui/ProgressBar";
 import { EligibilityStatus, AccountMode } from "@/lib/types";
 import { getEligibilityMessage } from "@/lib/utils/eligibility";
+import { ChildSelector } from "@/components/dashboard/ChildSelector";
+import { NotificationPermissionBanner } from "@/components/dashboard/NotificationPermissionBanner";
+import { createClient } from "@/lib/supabase/client";
+import { getAccount, getProfiles, getScreeningResults } from "@/lib/supabase/database";
 
 export default function HomePage() {
+  const router = useRouter();
   const [mode, setMode] = useState<AccountMode | null>(null);
   const [eligibility, setEligibility] = useState<EligibilityStatus | null>(null);
   const [profiles, setProfiles] = useState<any[]>([]);
+  const [activeProfile, setActiveProfile] = useState<any>(null);
+  const [allScreenings, setAllScreenings] = useState<any[]>([]);
 
   useEffect(() => {
-    const savedMode = localStorage.getItem("account_mode") as AccountMode;
-    const savedEligibility = localStorage.getItem("eligibility_status") as EligibilityStatus;
-    const savedProfiles = localStorage.getItem("profiles");
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
+        router.push("/login");
+        return;
+      }
 
-    setMode(savedMode);
-    setEligibility(savedEligibility);
-    if (savedProfiles) {
-      setProfiles(JSON.parse(savedProfiles));
-    }
-  }, []);
+      const account = await getAccount(user.id);
+      if (!account) {
+        router.push("/onboarding/mode");
+        return;
+      }
+
+      setMode(account.mode);
+      const fetchedProfiles = await getProfiles(account.id);
+      setProfiles(fetchedProfiles);
+
+      const active = account.active_profile_id
+        ? fetchedProfiles.find((p: any) => p.id === account.active_profile_id)
+        : fetchedProfiles[0];
+
+      setActiveProfile(active);
+
+      if (active) {
+        const screening = await getScreeningResults(active.id);
+        if (screening) {
+          setEligibility(screening.eligibility_status);
+        }
+      }
+
+      const screenings = await Promise.all(
+        fetchedProfiles.map((p: any) => getScreeningResults(p.id))
+      );
+      setAllScreenings(screenings.filter((s: any) => s !== null));
+    });
+  }, [router]);
 
   const milestones = [
     { label: "Eligibility", percentage: 0 },
@@ -61,6 +95,10 @@ export default function HomePage() {
         </p>
       </div>
 
+      {mode === "parent" && <ChildSelector />}
+
+      <NotificationPermissionBanner />
+
       {getEligibilityBadge(eligibility)}
 
       <Card>
@@ -73,7 +111,9 @@ export default function HomePage() {
               <p className="text-gray-700 mb-4">
                 You're eligible for the HPV vaccine. Find a clinic to get started.
               </p>
-              <Button fullWidth>Find a Location</Button>
+              <Button fullWidth onClick={() => router.push("/dashboard/help")}>
+                Find a Location
+              </Button>
             </>
           ) : (
             <>
@@ -83,7 +123,7 @@ export default function HomePage() {
               {(eligibility === "clinician_review" ||
                 eligibility === "defer" ||
                 eligibility === "defer_pregnancy") && (
-                <Button variant="outline" fullWidth>
+                <Button variant="outline" fullWidth onClick={() => router.push("/dashboard/help")}>
                   Contact Clinic
                 </Button>
               )}
@@ -111,22 +151,25 @@ export default function HomePage() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {profiles.map((profile, index) => (
-                <div
-                  key={index}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                >
-                  <div>
-                    <p className="font-medium text-gray-900">
-                      {profile.display_name || `Child ${index + 1}`}
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      Age: {profile.age_years || "N/A"}
-                    </p>
+              {profiles.map((profile, index) => {
+                const childScreening = allScreenings[index];
+                return (
+                  <div
+                    key={profile.id}
+                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                  >
+                    <div>
+                      <p className="font-medium text-gray-900">
+                        {profile.display_name || `Child ${index + 1}`}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        Age: {profile.age_years || "N/A"}
+                      </p>
+                    </div>
+                    {childScreening && getEligibilityBadge(childScreening.eligibility_status)}
                   </div>
-                  <Badge variant="success">Eligible</Badge>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>

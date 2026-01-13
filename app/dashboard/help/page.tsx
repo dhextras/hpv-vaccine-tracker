@@ -1,45 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Clinic } from "@/lib/types";
 
-const sampleClinics: Clinic[] = [
-  {
-    id: "clinic_001",
-    name: "Primary Health Centre - District A",
-    area_tags: ["Village A", "Block X", "District A"],
-    phone: "+91XXXXXXXXXX",
-    whatsapp: "+91XXXXXXXXXX",
-    address: "Near bus stand, Village A",
-    hours: "Mon-Sat 9:00-16:00",
-  },
-  {
-    id: "clinic_002",
-    name: "Community Health Center - Block Y",
-    area_tags: ["Village B", "Block Y", "District A"],
-    phone: "+91YYYYYYYYYY",
-    whatsapp: "+91YYYYYYYYYY",
-    address: "Main road, Village B",
-    hours: "Mon-Fri 8:00-14:00",
-  },
-  {
-    id: "clinic_003",
-    name: "Government Hospital - District A",
-    area_tags: ["District A", "City Center"],
-    phone: "+91ZZZZZZZZZZ",
-    address: "Hospital road, City Center",
-    hours: "24/7",
-  },
-];
-
 export default function HelpPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedClinic, setSelectedClinic] = useState<Clinic | null>(null);
+  const [clinics, setClinics] = useState<Clinic[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filteredClinics = sampleClinics.filter(
+  useEffect(() => {
+    fetch("/config/clinics.json")
+      .then((res) => res.json())
+      .then((data) => {
+        setClinics(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        setClinics([]);
+        setLoading(false);
+      });
+  }, []);
+
+  const filteredClinics = clinics.filter(
     (clinic) =>
       clinic.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       clinic.area_tags.some((tag) =>
@@ -142,6 +128,14 @@ export default function HelpPage() {
     );
   }
 
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-gray-600">Loading clinics...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -210,8 +204,8 @@ export default function HelpPage() {
       <Card className="bg-blue-50 border-blue-200">
         <CardContent className="p-4">
           <p className="text-sm text-blue-900">
-            <strong>Note:</strong> This is sample clinic data. Actual clinic
-            information will be loaded from your program configuration.
+            <strong>Note:</strong> Clinic information is loaded from the
+            configuration file. Contact your administrator to update clinic details.
           </p>
         </CardContent>
       </Card>
